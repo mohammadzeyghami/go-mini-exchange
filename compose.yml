@@ -1,0 +1,14 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8140:8140"
+    environment:
+      DEMO_BOT: "true"
+
+  web:
+    build: ./frontend
+    ports:
+      - "3300:3300"
+    depends_on:
+      - api
