@@ -29,6 +29,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/balances", s.balances)
 	mux.HandleFunc("GET /api/orders", s.openOrders)
 	mux.HandleFunc("POST /api/orders", s.placeOrder)
+	mux.HandleFunc("POST /api/faucet", s.faucet)
 	mux.HandleFunc("DELETE /api/orders/{id}", s.cancelOrder)
 	mux.HandleFunc("GET /ws", s.Hub.Serve)
 	return withCORS(mux)
@@ -142,6 +143,15 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 		trades = []domain.Trade{}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"order": res.Order, "trades": trades})
+}
+
+// faucet seeds the calling user's paper-trading balances. Idempotent: the
+// ledger's seed transaction ids make a second call a no-op, so any client
+// (e.g. the Telegram mini-app) can call it on every login.
+func (s *Server) faucet(w http.ResponseWriter, r *http.Request) {
+	u := user(r)
+	s.App.SeedUser(u, 100_000_000, 50*domain.SatPerBTC) // 1,000,000.00 USDT + 50 BTC
+	writeJSON(w, http.StatusOK, s.App.Ledger.Balances(u))
 }
 
 func (s *Server) cancelOrder(w http.ResponseWriter, r *http.Request) {
