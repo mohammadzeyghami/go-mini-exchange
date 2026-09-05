@@ -43,13 +43,33 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   });
   const queryClient = useQueryClient();
   const retry = useRef(0);
+  const wsLive = useRef(false);
 
   useEffect(() => {
-    // initial snapshots over REST
-    getOrderbook().then((ob) =>
-      setState((s) => ({ ...s, depth: ob.depth, last: ob.last })),
-    );
-    getTrades().then((trades) => setState((s) => ({ ...s, trades })));
+    // REST poll — the reliable path. WebSockets can be blocked outright by a
+    // proxy/firewall (a Tailscale ACL that allows GET but drops the WS
+    // Upgrade), so we always poll; the WS below is a low-latency enhancement
+    // that suspends polling only while it is actually connected.
+    const poll = () => {
+      if (wsLive.current) return;
+      getOrderbook()
+        .then((ob) =>
+          setState((s) => ({
+            ...s,
+            depth: ob.depth,
+            prevLast: s.last,
+            last: ob.last,
+          })),
+        )
+        .catch(() => {});
+      getTrades()
+        .then((trades) => setState((s) => ({ ...s, trades })))
+        .catch(() => {});
+      queryClient.invalidateQueries({ queryKey: ["balances"] });
+      queryClient.invalidateQueries({ queryKey: ["openOrders"] });
+    };
+    poll();
+    const pollTimer = setInterval(poll, 1500);
 
     let ws: WebSocket | null = null;
     let closed = false;
@@ -59,6 +79,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       ws = new WebSocket(WS_URL);
       ws.onopen = () => {
         retry.current = 0;
+        wsLive.current = true;
         setState((s) => ({ ...s, connected: true }));
       };
       ws.onmessage = (ev) => {
@@ -82,10 +103,11 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         }
       };
       ws.onclose = () => {
+        wsLive.current = false;
         setState((s) => ({ ...s, connected: false }));
         if (!closed) {
           retry.current += 1;
-          timer = setTimeout(connect, Math.min(1000 * retry.current, 5000));
+          timer = setTimeout(connect, Math.min(2000 * retry.current, 15000));
         }
       };
     };
@@ -94,6 +116,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
     return () => {
       closed = true;
       clearTimeout(timer);
+      clearInterval(pollTimer);
       ws?.close();
     };
   }, [queryClient]);

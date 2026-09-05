@@ -1,10 +1,11 @@
 import axios from "axios";
 
-// The API and WS live on the backend port; default to the page's own host so
-// the dashboard works both on localhost and over Tailscale/LAN.
+// REST is same-origin and proxied to the backend by Next (see next.config.ts),
+// so the browser only talks to the web port — enough when a firewall/Tailscale
+// ACL forwards the web port but not the API port. WS still tries :8140 directly
+// as a low-latency enhancement; when it is blocked, REST polling carries the UI.
 const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? `http://${host}:8140`;
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 export const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? `ws://${host}:8140/ws`;
 
