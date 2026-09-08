@@ -3,18 +3,15 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { placeOrder, type Side } from "@/lib/api";
-import { btcToSat, usdToCents, fmtUsd } from "@/lib/format";
+import { placeOrder, getBalances, type Side } from "@/lib/api";
+import { btcToSat, usdToCents, fmtUsd, fmtBtc } from "@/lib/format";
 import { useMarket } from "@/lib/market";
+import { useUser } from "@/lib/user";
 import { useState } from "react";
 
 const schema = z.object({
@@ -26,19 +23,32 @@ const schema = z.object({
       message: "min 0.0001 BTC",
     }),
 });
-
 type FormValues = z.infer<typeof schema>;
 
 export function OrderForm() {
   const [side, setSide] = useState<Side>("buy");
   const [type, setType] = useState<"limit" | "market">("limit");
   const { last } = useMarket();
+  const { user } = useUser();
   const queryClient = useQueryClient();
+
+  const { data: balances } = useQuery({
+    queryKey: ["balances", user],
+    queryFn: getBalances,
+    refetchInterval: 3000,
+  });
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { price: "", qty: "" },
   });
+
+  const priceStr = form.watch("price");
+  const qtyStr = form.watch("qty");
+  const effPrice =
+    type === "limit" ? parseFloat(priceStr || "0") : last / 100;
+  const qtyNum = parseFloat(qtyStr || "0") || 0;
+  const total = effPrice > 0 && qtyNum > 0 ? effPrice * qtyNum : 0;
 
   const mutation = useMutation({
     mutationFn: placeOrder,
@@ -64,6 +74,20 @@ export function OrderForm() {
     },
   });
 
+  const setPct = (pct: number) => {
+    const refPrice = effPrice > 0 ? effPrice : last / 100;
+    if (refPrice <= 0) return;
+    let maxBtc = 0;
+    if (side === "buy") {
+      const usdt = (balances?.USDT?.available ?? 0) / 100;
+      maxBtc = usdt / refPrice;
+    } else {
+      maxBtc = (balances?.BTC?.available ?? 0) / 1e8;
+    }
+    const q = maxBtc * pct * 0.999; // headroom for fees/rounding
+    if (q > 0) form.setValue("qty", q.toFixed(4), { shouldValidate: true });
+  };
+
   const onSubmit = (v: FormValues) => {
     if (type === "limit") {
       const cents = usdToCents(v.price ?? "");
@@ -77,103 +101,130 @@ export function OrderForm() {
     }
   };
 
+  const buy = side === "buy";
+  const accent = buy ? "var(--up)" : "var(--down)";
+
   return (
-    <Card className="p-4">
-      <div className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            variant={side === "buy" ? "default" : "outline"}
-            className={
-              side === "buy" ? "bg-emerald-600 hover:bg-emerald-500" : ""
-            }
-            onClick={() => setSide("buy")}
-          >
-            Buy
-          </Button>
-          <Button
-            variant={side === "sell" ? "default" : "outline"}
-            className={side === "sell" ? "bg-red-600 hover:bg-red-500" : ""}
-            onClick={() => setSide("sell")}
-          >
-            Sell
-          </Button>
-        </div>
-
-        <Tabs value={type} onValueChange={(v) => setType(v as typeof type)}>
-          <TabsList className="w-full">
-            <TabsTrigger value="limit" className="flex-1">
-              Limit
-            </TabsTrigger>
-            <TabsTrigger value="market" className="flex-1">
-              Market
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-
-        <form
-          onSubmit={form.handleSubmit(onSubmit)}
-          className="flex flex-col gap-3"
+    <div className="panel p-3">
+      {/* buy / sell segmented */}
+      <div className="relative grid grid-cols-2 rounded-lg border border-border/70 bg-secondary/40 p-1">
+        <motion.div
+          layout
+          transition={{ type: "spring", stiffness: 500, damping: 34 }}
+          className="absolute inset-y-1 w-[calc(50%-4px)] rounded-md"
+          style={{ background: accent, left: buy ? 4 : "auto", right: buy ? "auto" : 4, opacity: 0.16 }}
+        />
+        <button
+          onClick={() => setSide("buy")}
+          className="z-10 rounded-md py-1.5 text-sm font-semibold transition-colors"
+          style={{ color: buy ? "var(--up)" : "var(--muted-foreground)" }}
         >
-          {type === "limit" && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="price" className="text-xs">
-                Price (USDT){" "}
-                {last > 0 && (
-                  <button
-                    type="button"
-                    className="text-muted-foreground underline"
-                    onClick={() =>
-                      form.setValue("price", (last / 100).toFixed(2))
-                    }
-                  >
-                    last {fmtUsd(last)}
-                  </button>
-                )}
-              </Label>
-              <Input
-                id="price"
-                inputMode="decimal"
-                placeholder="43000.00"
-                className="font-mono"
-                {...form.register("price")}
-              />
-              {form.formState.errors.price && (
-                <p className="text-xs text-red-400">
-                  {form.formState.errors.price.message}
-                </p>
+          Buy
+        </button>
+        <button
+          onClick={() => setSide("sell")}
+          className="z-10 rounded-md py-1.5 text-sm font-semibold transition-colors"
+          style={{ color: !buy ? "var(--down)" : "var(--muted-foreground)" }}
+        >
+          Sell
+        </button>
+      </div>
+
+      {/* limit / market */}
+      <div className="mt-2 flex gap-1 text-xs">
+        {(["limit", "market"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setType(t)}
+            className={`flex-1 rounded-md py-1.5 capitalize transition-colors ${
+              type === t ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      <form onSubmit={form.handleSubmit(onSubmit)} className="mt-3 flex flex-col gap-2.5">
+        {type === "limit" && (
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="label">Price · USDT</span>
+              {last > 0 && (
+                <button
+                  type="button"
+                  className="font-mono text-[11px] tnum text-primary hover:underline"
+                  onClick={() => form.setValue("price", (last / 100).toFixed(2), { shouldValidate: true })}
+                >
+                  last {fmtUsd(last)}
+                </button>
               )}
             </div>
-          )}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="qty" className="text-xs">
-              Quantity (BTC)
-            </Label>
             <Input
-              id="qty"
               inputMode="decimal"
-              placeholder="0.01"
-              className="font-mono"
-              {...form.register("qty")}
+              placeholder="43000.00"
+              className="h-9 font-mono tnum"
+              {...form.register("price")}
             />
-            {form.formState.errors.qty && (
-              <p className="text-xs text-red-400">
-                {form.formState.errors.qty.message}
-              </p>
+            {form.formState.errors.price && (
+              <p className="mt-1 text-[11px] down">{form.formState.errors.price.message}</p>
             )}
           </div>
-          <motion.div whileTap={{ scale: 0.98 }}>
-            <Button
-              type="submit"
-              disabled={mutation.isPending}
-              className={`w-full ${side === "buy" ? "bg-emerald-600 hover:bg-emerald-500" : "bg-red-600 hover:bg-red-500"}`}
+        )}
+
+        <div>
+          <span className="label mb-1 block">Amount · BTC</span>
+          <Input
+            inputMode="decimal"
+            placeholder="0.0100"
+            className="h-9 font-mono tnum"
+            {...form.register("qty")}
+          />
+          {form.formState.errors.qty && (
+            <p className="mt-1 text-[11px] down">{form.formState.errors.qty.message}</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-4 gap-1">
+          {[0.25, 0.5, 0.75, 1].map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPct(p)}
+              className="rounded-md border border-border/70 bg-secondary/30 py-1 font-mono text-[11px] tnum text-muted-foreground transition-colors hover:text-foreground"
             >
-              {mutation.isPending
-                ? "…"
-                : `${side === "buy" ? "Buy" : "Sell"} BTC ${type === "market" ? "(market)" : ""}`}
-            </Button>
-          </motion.div>
-        </form>
-      </div>
-    </Card>
+              {p * 100}%
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between rounded-md bg-secondary/30 px-2.5 py-2">
+          <span className="label">Total</span>
+          <span className="font-mono text-sm tnum">
+            {total > 0 ? `${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT` : "—"}
+          </span>
+        </div>
+
+        <motion.button
+          whileTap={{ scale: 0.985 }}
+          type="submit"
+          disabled={mutation.isPending}
+          className="mt-0.5 rounded-lg py-2.5 text-sm font-bold text-[#0a0b0e] transition-opacity disabled:opacity-60"
+          style={{ background: accent }}
+        >
+          {mutation.isPending
+            ? "…"
+            : `${buy ? "Buy" : "Sell"} BTC${type === "market" ? " · Market" : ""}`}
+        </motion.button>
+        <p className="text-center text-[10px] text-muted-foreground">
+          available:{" "}
+          <span className="font-mono tnum">
+            {buy
+              ? `${fmtUsd(balances?.USDT?.available ?? 0)} USDT`
+              : `${fmtBtc(balances?.BTC?.available ?? 0)} BTC`}
+          </span>
+        </p>
+      </form>
+    </div>
   );
 }
